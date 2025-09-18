@@ -26,22 +26,12 @@ sobel_y = cv2.Sobel(blur1, cv2.CV_64F, 0, 1, ksize=3)
 # 计算梯度幅值（与 ImageJ "Find Edges" 一致）
 sobel_img = cv2.magnitude(sobel_x, sobel_y)
 
-if sobel_img.dtype != np.uint8:
-    sobel_norm = cv2.normalize(sobel_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-else:
-    sobel_norm = sobel_img
+#低于某阈值的部分清空
+sobel_img[sobel_img<40] = 0
 
-#_, edges = cv2.threshold(sobel_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-_, edges = cv2.threshold(sobel_norm, 40, 255)
 
-ret_img = edges 
+ret_img = sobel_img 
 # 转换为可显示的 8 位图像
 edges = cv2.convertScaleAbs(ret_img)
 
 cv2.imwrite(dst_fn, edges)
-
-# 显示结果
-#cv2.imshow('Original', img)
-#cv2.imshow('Sobel Edges (ImageJ Equivalent)', edges)
-#cv2.waitKey(0)
-#cv2.destroyAllWindows()

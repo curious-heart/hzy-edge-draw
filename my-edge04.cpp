@@ -173,6 +173,116 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 5, int slice_wi
     return out_final;
 }
 
+/**
+ * @brief 对输入图像执行：阈值处理、二值化、形态学闭运算、边界提取
+ * @param img 输入图像（8位或16位灰度/彩色）
+ * @param binary 输出二值图像 (8位)
+ * @param morph 输出形态学闭运算结果 (8位)
+ * @param edges 输出边界图像 (8位)
+ */
+void draw_wave_front_8bit(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
+{
+    // 转灰度
+    Mat gray;
+    if (img.channels() == 3 || img.channels() == 4)
+        cvtColor(img, gray, COLOR_BGR2GRAY);
+    else
+        gray = img;
+
+    // 如果是16位图像，转换为8位
+    Mat gray8;
+    if (gray.depth() == CV_16U)
+    {
+        double minVal, maxVal;
+        minMaxLoc(gray, &minVal, &maxVal);
+        double scale = 255.0 / (maxVal > 0 ? maxVal : 1.0);
+        gray.convertTo(gray8, CV_8U, scale);
+    }
+    else
+    {
+        gray8 = gray;
+    }
+
+    // Otsu 二值化
+    threshold(gray8, binary, 0, 255, THRESH_BINARY | THRESH_OTSU);
+
+    // 形态学闭运算（膨胀后腐蚀）
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+    morphologyEx(binary, morph, MORPH_CLOSE, kernel, Point(-1, -1), 1);
+
+    // 提取边界：膨胀 - 原图
+    Mat dilated;
+    dilate(morph, dilated, kernel, Point(-1, -1), 1);
+    subtract(dilated, morph, edges);
+}
+
+/**
+ * @brief 对输入图像执行：阈值处理(保留16位)、二值化、形态学闭运算、边界提取
+ * @param img 输入图像（8位或16位灰度/彩色）
+ * @param binary 输出二值图像 (如果输入是16位 -> CV_16U 0/65535；否则 CV_8U 0/255)
+ * @param morph 输出形态学闭运算结果 (CV_8U)
+ * @param edges 输出边界图像 (CV_8U)
+ */
+void draw_wave_front(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
+{
+    // 转灰度
+    Mat gray;
+    if (img.channels() == 3 || img.channels() == 4)
+        cvtColor(img, gray, COLOR_BGR2GRAY);
+    else
+        gray = img;
+
+    // -------------------------
+    // 二值化（支持16位）
+    // -------------------------
+    if (gray.depth() == CV_16U)
+    {
+        // 在缩放后的8位图上用Otsu找阈值
+        double minv, maxv;
+        minMaxLoc(gray, &minv, &maxv);
+        Mat gray8;
+        gray.convertTo(gray8, CV_8U, 255.0 / (maxv > 0 ? maxv : 1.0));
+
+        Mat dummy;
+        double otsu_thresh = threshold(gray8, dummy, 0, 255, THRESH_BINARY | THRESH_OTSU);
+
+        // 映射回16位阈值
+        double scaled_thresh = otsu_thresh * (maxv / 255.0);
+
+        // 生成16位二值图（0 / 65535）
+        Mat mask = (gray > scaled_thresh);
+        mask.convertTo(binary, CV_16U, 65535);
+    }
+    else
+    {
+        // 8位图直接用Otsu
+        threshold(gray, binary, 0, 255, THRESH_BINARY | THRESH_OTSU);
+    }
+
+    // -------------------------
+    // 形态学闭运算
+    // -------------------------
+    Mat binary8;
+    if (binary.depth() == CV_16U)
+        binary.convertTo(binary8, CV_8U, 255.0 / 65535.0);
+    else
+        binary8 = binary;
+
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
+    morphologyEx(binary8, morph, MORPH_CLOSE, kernel, Point(-1, -1), 1);
+
+    // -------------------------
+    // 提取边界：膨胀 - 原图
+    // -------------------------
+    Mat dilated;
+    dilate(morph, dilated, kernel, Point(-1, -1), 1);
+    subtract(dilated, morph, edges);
+}
+
+#define FOUR_DIR '1'
+#define DRAW_WAVE_OTSU_8BIT '2'
+#define DRAW_WAVE_OTSUL '3'
+
 int main(int argc, char** argv)
 {
     if (argc < 2) {
@@ -182,32 +292,55 @@ int main(int argc, char** argv)
 
     string img_fn = argv[1];
 
-	int bdr_width = 20;      // 默认值
-    int slice_width = 20;   // 默认值
-    double bdr_diff_r = 0.7; // 默认值
-    string name_apx = "-my_edge04";
-
-    if (argc >= 3) bdr_width   = std::atoi(argv[2]);
-    if (argc >= 4) slice_width = std::atoi(argv[3]);
-    if (argc >= 5) bdr_diff_r  = std::atof(argv[4]);
-    if (argc >= 6) name_apx = argv[5];
-
     Mat img = imread(img_fn, IMREAD_UNCHANGED);
     if (img.empty()) {
         cout << "Cannot read image: " << img_fn << endl;
         return -1;
     }
 
-    Mat boundary = detect_boundaries_block_4dir(img, bdr_width, 
-												slice_width, bdr_diff_r);
+    if (2 == argc || FOUR_DIR == argv[2][0])
+    {
+        int bdr_width = 20;      // 默认值
+        int slice_width = 20;   // 默认值
+        double bdr_diff_r = 0.7; // 默认值
+        string name_apx = "-my_edge04";
 
-	string dst_fn = make_new_filename(img_fn, name_apx);
+        if (argc >= 4) bdr_width = std::atoi(argv[3]);
+        if (argc >= 5) slice_width = std::atoi(argv[4]);
+        if (argc >= 6) bdr_diff_r = std::atof(argv[5]);
+        if (argc >= 7) name_apx = argv[6];
 
-    Mat edges;
-    convertScaleAbs(boundary, edges); // 可视化
-    imwrite(dst_fn, edges);
+        Mat boundary = detect_boundaries_block_4dir(img, bdr_width,
+													slice_width, bdr_diff_r);
+		string dst_fn = make_new_filename(img_fn, name_apx);
+		Mat edges;
+		convertScaleAbs(boundary, edges); // 可视化
+		imwrite(dst_fn, edges);
 
-    cout << "Saved result: " << dst_fn << endl;
+		cout << "Saved result: " << dst_fn << endl;
+    }
+    else
+    {
+        string name_apx;
+		Mat binary, morph, edges;
+        if (DRAW_WAVE_OTSU_8BIT == argv[2][0])
+        {
+            draw_wave_front_8bit(img, binary, morph, edges);
+            name_apx = "-draw_wave-otsu8bit";
+        }
+        else
+        {
+            draw_wave_front(img, binary, morph, edges);
+            name_apx = "-draw_wave-otsu";
+        }
+		string dst_bin_fn = make_new_filename(img_fn, name_apx + "-bin");
+		string dst_mor_fn = make_new_filename(img_fn, name_apx + "-mor");
+		string dst_edg_fn = make_new_filename(img_fn, name_apx + "-edg");
+
+		imwrite(dst_bin_fn, binary);
+		imwrite(dst_mor_fn, morph);
+		imwrite(dst_edg_fn, edges);
+    }
 
     return 0;
 }

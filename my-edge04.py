@@ -43,7 +43,7 @@ def detect_boundaries_block_4dir(img, bdr_width=5, slice_width=4, bdr_diff_r=0.4
 
             #if center_mean - left_mean > bdr_diff:
             if xl1 > xl0 and center_mean > 0 and  (left_mean / center_mean) < bdr_diff_r:
-                out[y0:y1, x0:x1] = center_mean
+                out[y0:y1, x0:x1] = img[y0:y1, x0:x1] #center_mean
                 out[y0:y1, :x0] = 0
                 out[y0:y1, x1:] = 0
                 row_set = True
@@ -66,7 +66,7 @@ def detect_boundaries_block_4dir(img, bdr_width=5, slice_width=4, bdr_diff_r=0.4
 
             #if center_mean - right_mean > bdr_diff:
             if xr1 > xr0 and center_mean > 0 and (right_mean / center_mean) < bdr_diff_r:
-                out[y0:y1, x0:x1] = center_mean
+                out[y0:y1, x0:x1] = img[y0:y1, x0:x1] #center_mean
                 out[y0:y1, :x0] = 0
                 out[y0:y1, x1:] = 0
                 row_set = True
@@ -89,7 +89,7 @@ def detect_boundaries_block_4dir(img, bdr_width=5, slice_width=4, bdr_diff_r=0.4
 
             #if center_mean - bottom_mean > bdr_diff:
             if yb1 > yb0 and center_mean > 0 and (bottom_mean / center_mean) < bdr_diff_r:
-                out[y0:y1, x0:x1] = center_mean
+                out[y0:y1, x0:x1] = img[y0:y1, x0:x1] #center_mean
                 out[:y0, x0:x1] = 0
                 out[y1:, x0:x1] = 0
                 col_set = True
@@ -112,7 +112,7 @@ def detect_boundaries_block_4dir(img, bdr_width=5, slice_width=4, bdr_diff_r=0.4
 
             #if center_mean - top_mean > bdr_diff:
             if yt1 > yt0 and center_mean > 0 and (top_mean / center_mean < bdr_diff_r):
-                out[y0:y1, x0:x1] = center_mean
+                out[y0:y1, x0:x1] = img[y0:y1, x0:x1] #center_mean
                 out[:y0, x0:x1] = 0
                 out[y1:, x0:x1] = 0
                 col_set = True
