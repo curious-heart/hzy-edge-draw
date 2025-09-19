@@ -180,7 +180,8 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 5, int slice_wi
  * @param morph 输出形态学闭运算结果 (8位)
  * @param edges 输出边界图像 (8位)
  */
-void draw_wave_front_8bit(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
+void draw_wave_front_8bit(const Mat& img, Mat& binary, Mat& morph, Mat& edges,
+							int erode_strength = 0)
 {
     // 转灰度
     Mat gray;
@@ -210,6 +211,14 @@ void draw_wave_front_8bit(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
     Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
     morphologyEx(binary, morph, MORPH_CLOSE, kernel, Point(-1, -1), 1);
 
+    if (erode_strength > 0)
+    {
+        // 根据腐蚀强度放大 kernel 大小、增加迭代次数
+        int ksize = 3 + 2 * std::min(erode_strength, 3);  // 3→5→7→9
+        Mat ekernel = getStructuringElement(MORPH_RECT, Size(ksize, ksize));
+        int iters = std::min(erode_strength, 3);
+        erode(morph, morph, ekernel, Point(-1, -1), iters);
+    }
     // 提取边界：膨胀 - 原图
     Mat dilated;
     dilate(morph, dilated, kernel, Point(-1, -1), 1);
@@ -223,7 +232,8 @@ void draw_wave_front_8bit(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
  * @param morph 输出形态学闭运算结果 (CV_8U)
  * @param edges 输出边界图像 (CV_8U)
  */
-void draw_wave_front(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
+void draw_wave_front(const Mat& img, Mat& binary, Mat& morph, Mat& edges,
+    int erode_strength = 0)
 {
     // 转灰度
     Mat gray;
@@ -271,6 +281,14 @@ void draw_wave_front(const Mat& img, Mat& binary, Mat& morph, Mat& edges)
     Mat kernel = getStructuringElement(MORPH_RECT, Size(3, 3));
     morphologyEx(binary8, morph, MORPH_CLOSE, kernel, Point(-1, -1), 1);
 
+    if (erode_strength > 0)
+    {
+        // 根据腐蚀强度放大 kernel 大小、增加迭代次数
+        int ksize = 3 + 2 * std::min(erode_strength, 3);  // 3→5→7→9
+        Mat ekernel = getStructuringElement(MORPH_RECT, Size(ksize, ksize));
+        int iters = std::min(erode_strength, 3);
+        erode(morph, morph, ekernel, Point(-1, -1), iters);
+    }
     // -------------------------
     // 提取边界：膨胀 - 原图
     // -------------------------
@@ -308,7 +326,13 @@ int main(int argc, char** argv)
         if (argc >= 4) bdr_width = std::atoi(argv[3]);
         if (argc >= 5) slice_width = std::atoi(argv[4]);
         if (argc >= 6) bdr_diff_r = std::atof(argv[5]);
-        if (argc >= 7) name_apx = argv[6];
+        if (argc >= 7) name_apx += argv[6];
+
+        std::ostringstream oss;
+        oss << bdr_diff_r;
+        name_apx += std::to_string(bdr_width) + "x"
+            + std::to_string(slice_width) + std::string("x") + oss.str();
+
 
         Mat boundary = detect_boundaries_block_4dir(img, bdr_width,
 													slice_width, bdr_diff_r);
@@ -322,17 +346,29 @@ int main(int argc, char** argv)
     else
     {
         string name_apx;
+        int erode_strength = 0;
+        if (argc > 3)
+        {
+            erode_strength = std::atoi(argv[3]);
+        }
+
 		Mat binary, morph, edges;
         if (DRAW_WAVE_OTSU_8BIT == argv[2][0])
         {
-            draw_wave_front_8bit(img, binary, morph, edges);
+            draw_wave_front_8bit(img, binary, morph, edges, erode_strength);
             name_apx = "-draw_wave-otsu8bit";
         }
         else
         {
-            draw_wave_front(img, binary, morph, edges);
+            draw_wave_front(img, binary, morph, edges, erode_strength);
             name_apx = "-draw_wave-otsu";
         }
+
+        if (argc > 3)
+        {
+            name_apx += "-er_" + std::string(argv[3]);
+        }
+
 		string dst_bin_fn = make_new_filename(img_fn, name_apx + "-bin");
 		string dst_mor_fn = make_new_filename(img_fn, name_apx + "-mor");
 		string dst_edg_fn = make_new_filename(img_fn, name_apx + "-edg");
