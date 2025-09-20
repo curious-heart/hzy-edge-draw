@@ -28,13 +28,23 @@ std::string make_new_filename(const std::string& img_fn, const std::string& ap_s
     return dir + base + ap_str + ext;
 }
 
-Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 5, int slice_width = 4, 
-								double bdr_diff_r = 20.0f)
+typedef enum
 {
+    LEFT_TO_RIGHT = 1,
+    RIGHT_TO_LEFT,
+    TOP_TO_BOTTOM,
+    BOTTOM_TO_TOP,
+}detect_dound_dir_e_t;
+Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_width = 20,
+    double bdr_diff_r = 0.9f, detect_dound_dir_e_t dirc = BOTTOM_TO_TOP)
+{
+    Mat tmp_out;
+
     Mat gray;
     if (img.channels() > 1) {
         cvtColor(img, gray, COLOR_BGR2GRAY);
-    } else {
+    }
+    else {
         gray = img;
     }
 
@@ -46,120 +56,144 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 5, int slice_wi
     Mat out = Mat::zeros(h, w, CV_32F);
 
     // ----------------- 左→右 -----------------
-    for (int y0 = 0; y0 < h; y0 += slice_width) {
-        int y1 = min(y0 + slice_width, h);
-        bool row_set = false;
-        for (int x0 = 0; x0 < w; x0 += bdr_width) {
-            if (row_set) break;
-            int x1 = min(x0 + bdr_width, w);
+    if (LEFT_TO_RIGHT == dirc)
+    {
+        for (int y0 = 0; y0 < h; y0 += slice_width)
+        {
+            int y1 = min(y0 + slice_width, h);
+            bool row_set = false;
+            for (int x0 = 0; x0 < w; x0 += bdr_width) {
+                if (row_set) break;
+                int x1 = min(x0 + bdr_width, w);
 
-            Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
-            double center_mean = mean(center_block)[0];
+                Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
+                double center_mean = mean(center_block)[0];
 
-            int xl0 = max(0, x0 - bdr_width);
-            int xl1 = x0;
-            double left_mean = 0;
-            if (xl1 > xl0)
-            {
-                left_mean = mean(img_f(Range(y0, y1), Range(xl0, xl1)))[0];
-            }
+                int xl0 = max(0, x0 - bdr_width);
+                int xl1 = x0;
+                double left_mean = 0;
+                if (xl1 > xl0)
+                {
+                    left_mean = mean(img_f(Range(y0, y1), Range(xl0, xl1)))[0];
+                }
 
-            //if (center_mean - left_mean > bdr_diff_r)
-            if((xl1 > xl0) && (center_mean > 0) 
-                && ((left_mean / center_mean) < bdr_diff_r))
-            {
-                out(Range(y0, y1), Range(x0, x1)) = center_mean;
-                out(Range(y0, y1), Range(0, x0)) = 0;
-                out(Range(y0, y1), Range(x1, w)) = 0;
-                row_set = true;
+                //if (center_mean - left_mean > bdr_diff_r)
+                if ((xl1 > xl0) && (center_mean > 0)
+                    && ((left_mean / center_mean) < bdr_diff_r))
+                {
+                    out(Range(y0, y1), Range(x0, x1)) = center_mean;
+                    out(Range(y0, y1), Range(0, x0)) = 0;
+                    out(Range(y0, y1), Range(x1, w)) = 0;
+                    row_set = true;
+                }
             }
         }
-    }
+		out.convertTo(tmp_out, CV_16U);
+		imwrite("./001-left-right.tif", tmp_out);
+	}
 
     // ----------------- 右→左 -----------------
-    for (int y0 = 0; y0 < h; y0 += slice_width) {
-        int y1 = min(y0 + slice_width, h);
-        bool row_set = false;
-        for (int x0 = w - bdr_width; x0 >= 0; x0 -= bdr_width) {
-            if (row_set) break;
-            int x1 = min(x0 + bdr_width, w);
+    if (RIGHT_TO_LEFT == dirc)
+    {
+        for (int y0 = 0; y0 < h; y0 += slice_width)
+        {
+            int y1 = min(y0 + slice_width, h);
+            bool row_set = false;
+            for (int x0 = w - bdr_width; x0 >= 0; x0 -= bdr_width) {
+                if (row_set) break;
+                int x1 = min(x0 + bdr_width, w);
 
-            Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
-            double center_mean = mean(center_block)[0];
+                Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
+                double center_mean = mean(center_block)[0];
 
-            int xr0 = x1;
-            int xr1 = min(w, x1 + bdr_width);
-            double right_mean = 0;
-            if(xr1 > xr0)
-            {
-                right_mean = mean(img_f(Range(y0, y1), Range(xr0, xr1)))[0];
-            }
+                int xr0 = x1;
+                int xr1 = min(w, x1 + bdr_width);
+                double right_mean = 0;
+                if (xr1 > xr0)
+                {
+                    right_mean = mean(img_f(Range(y0, y1), Range(xr0, xr1)))[0];
+                }
 
-            //if (center_mean - right_mean > bdr_diff_r)
-            if ((xr1 > xr0) && (center_mean > 0)
-					&& ((right_mean / center_mean) < bdr_diff_r))
-            {
-                out(Range(y0, y1), Range(x0, x1)) = center_mean;
-                out(Range(y0, y1), Range(0, x0)) = 0;
-                out(Range(y0, y1), Range(x1, w)) = 0;
-                row_set = true;
+                //if (center_mean - right_mean > bdr_diff_r)
+                if ((xr1 > xr0) && (center_mean > 0)
+                    && ((right_mean / center_mean) < bdr_diff_r))
+                {
+                    out(Range(y0, y1), Range(x0, x1)) = center_mean;
+                    out(Range(y0, y1), Range(0, x0)) = 0;
+                    out(Range(y0, y1), Range(x1, w)) = 0;
+                    row_set = true;
+                }
             }
         }
+        out.convertTo(tmp_out, CV_16U);
+        imwrite("./002-right-left.tif", tmp_out);
     }
 
     // ----------------- 上→下 -----------------
-    for (int x0 = 0; x0 < w; x0 += bdr_width) {
-        int x1 = min(x0 + bdr_width, w);
-        bool col_set = false;
-        for (int y0 = 0; y0 < h; y0 += slice_width) {
-            if (col_set) break;
-            int y1 = min(y0 + slice_width, h);
+    if (TOP_TO_BOTTOM == dirc)
+    {
+        for (int x0 = 0; x0 < w; x0 += bdr_width)
+        {
+            int x1 = min(x0 + bdr_width, w);
+            bool col_set = false;
+            for (int y0 = 0; y0 < h; y0 += slice_width) {
+                if (col_set) break;
+                int y1 = min(y0 + slice_width, h);
 
-            Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
-            double center_mean = mean(center_block)[0];
+                Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
+                double center_mean = mean(center_block)[0];
 
-            int yb0 = min(h, y1);
-            int yb1 = min(h, y1 + slice_width);
-            double bottom_mean = 0;
-            if(yb1 > yb0) bottom_mean = mean(img_f(Range(yb0, yb1), Range(x0, x1)))[0];
+                int yt0 = max(0, y0 - slice_width);
+                int yt1 = y0;
+                double top_mean = 0;
+                if (yt1 > yt0) top_mean = mean(img_f(Range(yt0, yt1), Range(x0, x1)))[0];
 
-            //if (center_mean - bottom_mean > bdr_diff_r)
-            if((yb1 > yb0) && (center_mean > 0)
-                && ((bottom_mean / center_mean) < bdr_diff_r))
-            {
-                out(Range(y0, y1), Range(x0, x1)) = center_mean;
-                out(Range(0, y0), Range(x0, x1)) = 0;
-                out(Range(y1, h), Range(x0, x1)) = 0;
-                col_set = true;
+                if ((yt1 > yt0) && (center_mean > 0)
+                    && ((top_mean / center_mean) < bdr_diff_r))
+                {
+                    out(Range(y0, y1), Range(x0, x1)) = center_mean;
+                    out(Range(0, y0), Range(x0, x1)) = 0;
+                    out(Range(y1, h), Range(x0, x1)) = 0;
+                    col_set = true;
+                }
+
             }
         }
+		out.convertTo(tmp_out, CV_16U);
+		imwrite("./003-top-down.tif", tmp_out);
     }
 
     // ----------------- 下→上 -----------------
-    for (int x0 = 0; x0 < w; x0 += bdr_width) {
-        int x1 = min(x0 + bdr_width, w);
-        bool col_set = false;
-        for (int y0 = h - slice_width; y0 >= 0; y0 -= slice_width) {
-            if (col_set) break;
-            int y1 = min(y0 + slice_width, h);
+    if (BOTTOM_TO_TOP == dirc)
+    {
+        for (int x0 = 0; x0 < w; x0 += bdr_width)
+        {
+            int x1 = min(x0 + bdr_width, w);
+            bool col_set = false;
+            for (int y0 = h - slice_width; y0 >= 0; y0 -= slice_width) {
+                if (col_set) break;
+                int y1 = min(y0 + slice_width, h);
 
-            Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
-            double center_mean = mean(center_block)[0];
+                Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
+                double center_mean = mean(center_block)[0];
 
-            int yt0 = max(0, y0 - slice_width);
-            int yt1 = y0;
-            double top_mean = 0;
-            if(yt1 > yt0) top_mean = mean(img_f(Range(yt0, yt1), Range(x0, x1)))[0];
+                int yb0 = min(h, y1);
+                int yb1 = min(h, y1 + slice_width);
+                double bottom_mean = 0;
+                if (yb1 > yb0) bottom_mean = mean(img_f(Range(yb0, yb1), Range(x0, x1)))[0];
 
-            if((yt1 > yt0) && (center_mean > 0)
-                && ((top_mean / center_mean) < bdr_diff_r))
-            {
-                out(Range(y0, y1), Range(x0, x1)) = center_mean;
-                out(Range(0, y0), Range(x0, x1)) = 0;
-                out(Range(y1, h), Range(x0, x1)) = 0;
-                col_set = true;
+                if ((yb1 > yb0) && (center_mean > 0)
+                    && ((bottom_mean / center_mean) < bdr_diff_r))
+                {
+                    out(Range(y0, y1), Range(x0, x1)) = center_mean;
+                    out(Range(0, y0), Range(x0, x1)) = 0;
+                    out(Range(y1, h), Range(x0, x1)) = 0;
+                    col_set = true;
+                }
             }
         }
+		out.convertTo(tmp_out, CV_16U);
+		imwrite("./004-down-top.tif", tmp_out);
     }
 
     // 转回原位深
@@ -297,7 +331,19 @@ void draw_wave_front(const Mat& img, Mat& binary, Mat& morph, Mat& edges,
     subtract(dilated, morph, edges);
 }
 
+Mat vflip_mat(Mat& img)
+{
+    Mat dst(img.size(), img.type());
+    int rows = img.rows;
+    for (int y = 0; y < rows; y++)
+    {
+        img.row(rows - 1 - y).copyTo(dst.row(y));
+    }
+    return dst;
+}
+
 #define FOUR_DIR '1'
+#define FOUR_DIR_FLIP 'F'
 #define DRAW_WAVE_OTSU_8BIT '2'
 #define DRAW_WAVE_OTSUL '3'
 
@@ -316,17 +362,19 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (2 == argc || FOUR_DIR == argv[2][0])
+    if (2 == argc || FOUR_DIR == argv[2][0] || FOUR_DIR_FLIP == argv[2][0])
     {
         int bdr_width = 20;      // 默认值
         int slice_width = 20;   // 默认值
-        double bdr_diff_r = 0.7; // 默认值
+        double bdr_diff_r = 0.9; // 默认值
+        detect_dound_dir_e_t dirc = BOTTOM_TO_TOP;
         string name_apx = "-my_edge04";
 
         if (argc >= 4) bdr_width = std::atoi(argv[3]);
         if (argc >= 5) slice_width = std::atoi(argv[4]);
         if (argc >= 6) bdr_diff_r = std::atof(argv[5]);
-        if (argc >= 7) name_apx += argv[6];
+        if (argc >= 7) dirc = (detect_dound_dir_e_t)std::atoi(argv[6]);
+        if (argc >= 8) name_apx += argv[7];
 
         std::ostringstream oss;
         oss << bdr_diff_r;
@@ -334,10 +382,18 @@ int main(int argc, char** argv)
             + std::to_string(slice_width) + std::string("x") + oss.str();
 
 
+        if (FOUR_DIR_FLIP == argv[2][0])
+        {
+			img = vflip_mat(img);
+            name_apx += "-flip";
+        }
         Mat boundary = detect_boundaries_block_4dir(img, bdr_width,
-													slice_width, bdr_diff_r);
+													slice_width, bdr_diff_r, dirc);
+        
 		string dst_fn = make_new_filename(img_fn, name_apx);
+
 		Mat edges;
+        //edges = boundary;
 		convertScaleAbs(boundary, edges); // 可视化
 		imwrite(dst_fn, edges);
 
