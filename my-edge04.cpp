@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <cmath>
 
 using namespace cv;
 using namespace std;
@@ -28,18 +29,154 @@ std::string make_new_filename(const std::string& img_fn, const std::string& ap_s
     return dir + base + ap_str + ext;
 }
 
+struct ImageInfo {
+    double linearity;
+    int branchPoints;
+    double elongation;
+};
+
+// --- PCA 计算函数
+ImageInfo analyzeImage(const cv::Mat& img) {
+    // --- 二值化（非零即前景）
+    cv::Mat binary = (img > 0);
+    binary.convertTo(binary, CV_8U);
+
+    // --- 取最大连通域
+    cv::Mat labels, stats, centroids;
+    int nLabels = cv::connectedComponentsWithStats(binary, labels, stats, centroids, 8, CV_32S);
+    if (nLabels <= 1) {  // 只有背景
+        return {0.0, 0, 0.0};
+    }
+
+    // 找到最大连通域
+    int maxArea = 0;
+    int maxLabel = 1;
+    for (int i = 1; i < nLabels; i++) {
+        int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (area > maxArea) {
+            maxArea = area;
+            maxLabel = i;
+        }
+    }
+    cv::Mat mask = (labels == maxLabel);
+
+    // --- 提取前景点坐标
+    std::vector<cv::Point> points;
+    cv::findNonZero(mask, points);
+    if (points.size() < 10) {
+        return {0.0, 0, 0.0};
+    }
+
+    // --- PCA
+    cv::Mat dataPts(points.size(), 2, CV_64F);
+    for (size_t i = 0; i < points.size(); ++i) {
+        dataPts.at<double>(i, 0) = points[i].x;
+        dataPts.at<double>(i, 1) = points[i].y;
+    }
+    cv::PCA pca_analysis(dataPts, cv::Mat(), cv::PCA::DATA_AS_ROW);
+    cv::Mat eigenvalues = pca_analysis.eigenvalues;
+    double linearity = eigenvalues.at<double>(0) / (eigenvalues.at<double>(1) + 1e-8);
+
+    // --- 骨架化 + 分叉点数（简单版：使用腐蚀膨胀方式）
+    cv::Mat skel(mask.size(), CV_8U, cv::Scalar(0));
+    cv::Mat temp, eroded;
+    cv::Mat element = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3,3));
+    cv::Mat imgCopy = mask.clone();
+    bool done;
+    do {
+        cv::erode(imgCopy, eroded, element);
+        cv::dilate(eroded, temp, element);
+        cv::subtract(imgCopy, temp, temp);
+        cv::bitwise_or(skel, temp, skel);
+        imgCopy = eroded.clone();
+        done = (cv::countNonZero(imgCopy) == 0);
+    } while (!done);
+
+    // 分叉点统计
+    int branchPoints = 0;
+    for (int y = 1; y < skel.rows - 1; ++y) {
+        for (int x = 1; x < skel.cols - 1; ++x) {
+            if (skel.at<uchar>(y, x)) {
+                int neighbors = 0;
+                for (int dy=-1; dy<=1; ++dy) {
+                    for (int dx=-1; dx<=1; ++dx) {
+                        if (dy==0 && dx==0) continue;
+                        if (skel.at<uchar>(y+dy, x+dx)) neighbors++;
+                    }
+                }
+                if (neighbors >= 3) branchPoints++;
+            }
+        }
+    }
+
+    // --- elongation
+    double majorAxis = std::sqrt(eigenvalues.at<double>(0));
+    double minorAxis = std::sqrt(eigenvalues.at<double>(1));
+    double elongation = majorAxis / (minorAxis + 1e-5);
+
+    return {linearity, branchPoints, elongation};
+}
+
+// --- 主选择函数
+int selectBestImage(const std::vector<cv::Mat>& images) {
+    std::vector<double> scores;
+    std::vector<ImageInfo> infos;
+
+    for (size_t i = 0; i < images.size(); ++i) {
+        ImageInfo info = analyzeImage(images[i]);
+        infos.push_back(info);
+
+        double score = info.linearity * 10.0 / (info.branchPoints + 1);
+        scores.push_back(score);
+
+        // 打印每张图 info
+        std::cout << "图像 " << i << " info: "
+                  << "linearity=" << info.linearity
+                  << ", branchPoints=" << info.branchPoints
+                  << ", elongation=" << info.elongation
+                  << ", score=" << score << std::endl;
+    }
+
+    // 找到最大 score 的索引
+    auto maxIt = std::max_element(scores.begin(), scores.end());
+    int bestIdx = std::distance(scores.begin(), maxIt);
+    std::cout << "score 最大的图像索引: " << bestIdx << std::endl;
+    return bestIdx;
+}
+
 typedef enum
 {
-    LEFT_TO_RIGHT = 1,
-    RIGHT_TO_LEFT,
-    TOP_TO_BOTTOM,
-    BOTTOM_TO_TOP,
-}detect_dound_dir_e_t;
-Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_width = 20,
-    double bdr_diff_r = 0.9f, detect_dound_dir_e_t dirc = BOTTOM_TO_TOP)
-{
-    Mat tmp_out;
+    LEFT_TO_RIGHT = 0x1,
+    RIGHT_TO_LEFT = 0x2,
+    TOP_TO_BOTTOM = 0x4,
+    BOTTOM_TO_TOP = 0x8,
 
+    DIRC_FULL_BITS = 0x0F
+}detect_dound_dir_e_t;
+static inline const char* dir_e_to_str(detect_dound_dir_e_t dirc)
+{
+	static const char* gs_dirc_str[] = {
+		"None",
+		"L-R",
+		"R-L",
+		"T-B",
+		"B-T"
+	};
+    if (dirc <= 0) return nullptr;
+	int pos = static_cast<int>(log2(static_cast<unsigned int>(dirc))) + 1;
+	if (pos >= sizeof(gs_dirc_str) / sizeof(gs_dirc_str[0])
+        || pos < 0) return nullptr;
+
+    return gs_dirc_str[pos];
+}
+
+Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_width = 20,
+								double bdr_diff_r = 0.9f, 
+								detect_dound_dir_e_t dirc = DIRC_FULL_BITS,
+								std::vector<cv::Mat>* all_outs = nullptr,
+								std::vector<std::string>* all_outs_names = nullptr,
+								int * best_idx = nullptr)
+{
     Mat gray;
     if (img.channels() > 1) {
         cvtColor(img, gray, COLOR_BGR2GRAY);
@@ -53,11 +190,13 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
     Mat img_f;
     gray.convertTo(img_f, CV_32F);
 
-    Mat out = Mat::zeros(h, w, CV_32F);
+	std::vector<cv::Mat> result_images;
 
+	Mat out = Mat::zeros(h, w, CV_32F);
     // ----------------- 左→右 -----------------
-    if (LEFT_TO_RIGHT == dirc)
+    if (dirc | LEFT_TO_RIGHT)
     {
+		out.setTo(0);
         for (int y0 = 0; y0 < h; y0 += slice_width)
         {
             int y1 = min(y0 + slice_width, h);
@@ -88,13 +227,21 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                 }
             }
         }
-		out.convertTo(tmp_out, CV_16U);
-		imwrite("./001-left-right.tif", tmp_out);
+
+		Mat out_final;
+		if (img.depth() == CV_8U) {
+			out.convertTo(out_final, CV_8U);
+		} else {
+			out.convertTo(out_final, CV_16U);
+		}
+		result_images.push_back(out_final);
+		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(LEFT_TO_RIGHT));
 	}
 
     // ----------------- 右→左 -----------------
-    if (RIGHT_TO_LEFT == dirc)
+    if (dirc | RIGHT_TO_LEFT)
     {
+		out.setTo(0);
         for (int y0 = 0; y0 < h; y0 += slice_width)
         {
             int y1 = min(y0 + slice_width, h);
@@ -125,13 +272,21 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                 }
             }
         }
-        out.convertTo(tmp_out, CV_16U);
-        imwrite("./002-right-left.tif", tmp_out);
+
+		Mat out_final;
+		if (img.depth() == CV_8U) {
+			out.convertTo(out_final, CV_8U);
+		} else {
+			out.convertTo(out_final, CV_16U);
+		}
+		result_images.push_back(out_final);
+		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(RIGHT_TO_LEFT));
     }
 
     // ----------------- 上→下 -----------------
-    if (TOP_TO_BOTTOM == dirc)
+    if (dirc | TOP_TO_BOTTOM)
     {
+		out.setTo(0);
         for (int x0 = 0; x0 < w; x0 += bdr_width)
         {
             int x1 = min(x0 + bdr_width, w);
@@ -159,13 +314,21 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 
             }
         }
-		out.convertTo(tmp_out, CV_16U);
-		imwrite("./003-top-down.tif", tmp_out);
+
+		Mat out_final;
+		if (img.depth() == CV_8U) {
+			out.convertTo(out_final, CV_8U);
+		} else {
+			out.convertTo(out_final, CV_16U);
+		}
+		result_images.push_back(out_final);
+        if (all_outs_names) all_outs_names->push_back(dir_e_to_str(TOP_TO_BOTTOM));
     }
 
     // ----------------- 下→上 -----------------
-    if (BOTTOM_TO_TOP == dirc)
+    if (dirc | BOTTOM_TO_TOP)
     {
+		out.setTo(0);
         for (int x0 = 0; x0 < w; x0 += bdr_width)
         {
             int x1 = min(x0 + bdr_width, w);
@@ -192,19 +355,26 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                 }
             }
         }
-		out.convertTo(tmp_out, CV_16U);
-		imwrite("./004-down-top.tif", tmp_out);
+
+		Mat out_final;
+		if (img.depth() == CV_8U) {
+			out.convertTo(out_final, CV_8U);
+		} else {
+			out.convertTo(out_final, CV_16U);
+		}
+		result_images.push_back(out_final);
+		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(BOTTOM_TO_TOP));
     }
 
-    // 转回原位深
-    Mat out_final;
-    if (img.depth() == CV_8U) {
-        out.convertTo(out_final, CV_8U);
-    } else {
-        out.convertTo(out_final, CV_16U);
-    }
-
-    return out_final;
+    if(result_images.size() == 0)
+    {
+		cout << "No direction selected!" << endl;
+        return Mat();
+	}
+	int bestIdx = selectBestImage(result_images);
+    if (all_outs) *all_outs = result_images;
+	if (best_idx) *best_idx = bestIdx;
+	return result_images[bestIdx];
 }
 
 /**
@@ -367,7 +537,7 @@ int main(int argc, char** argv)
         int bdr_width = 20;      // 默认值
         int slice_width = 20;   // 默认值
         double bdr_diff_r = 0.9; // 默认值
-        detect_dound_dir_e_t dirc = BOTTOM_TO_TOP;
+        detect_dound_dir_e_t dirc = DIRC_FULL_BITS;
         string name_apx = "-my_edge04";
 
         if (argc >= 4) bdr_width = std::atoi(argv[3]);
@@ -376,28 +546,50 @@ int main(int argc, char** argv)
         if (argc >= 7) dirc = (detect_dound_dir_e_t)std::atoi(argv[6]);
         if (argc >= 8) name_apx += argv[7];
 
+		const char* dirc_str = dir_e_to_str(dirc);
+        if(!dirc_str)
+        {
+            cout << "Invalid direction: " << (int)dirc << endl;
+            return -1;
+		}
+
         std::ostringstream oss;
         oss << bdr_diff_r;
         name_apx += std::to_string(bdr_width) + "x"
             + std::to_string(slice_width) + std::string("x") + oss.str();
-
 
         if (FOUR_DIR_FLIP == argv[2][0])
         {
 			img = vflip_mat(img);
             name_apx += "-flip";
         }
+
+        std::vector<cv::Mat> all_outs;
+        std::vector<std::string> all_outs_names;
+		int best_idx;
         Mat boundary = detect_boundaries_block_4dir(img, bdr_width,
-													slice_width, bdr_diff_r, dirc);
+												slice_width, bdr_diff_r, dirc,
+            &all_outs, &all_outs_names, &best_idx);
+        if (boundary.empty())
+        {
+			cout << "No boundary detected!" << endl;
+            return 0;
+        }
         
+        for (int i = 0; i < all_outs.size(); i++)
+        {
+            string fn = make_new_filename(img_fn,
+                name_apx + "-" + all_outs_names[i]);
+			Mat edges;
+			convertScaleAbs(all_outs[i], edges); // 可视化
+            imwrite(fn, edges);
+            cout << "Saved result: " << fn << endl;
+        }
 		string dst_fn = make_new_filename(img_fn, name_apx);
 
-		Mat edges;
-        //edges = boundary;
-		convertScaleAbs(boundary, edges); // 可视化
-		imwrite(dst_fn, edges);
-
-		cout << "Saved result: " << dst_fn << endl;
+        cout << endl;
+		cout << "The selected one : " << best_idx << ", "
+			<< all_outs_names[best_idx] << endl;
     }
     else
     {
