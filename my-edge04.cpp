@@ -1,12 +1,23 @@
+#define NOMINMAX
+#include <windows.h>
+
 #include "opencv2/opencv.hpp"
+#include "opencv2/ximgproc.hpp"
 #include <iostream>
 #include <string>
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
 
+#include <locale>
+
 using namespace cv;
 using namespace std;
+
+typedef struct
+{
+    int w, h;
+}grid_w_h_s_t;
 
 std::string make_new_filename(const std::string& img_fn, const std::string& ap_str)
 {
@@ -29,6 +40,36 @@ std::string make_new_filename(const std::string& img_fn, const std::string& ap_s
     return dir + base + ap_str + ext;
 }
 
+int countBranchPointsOfGrid(const cv::Mat& grid) {
+    CV_Assert(grid.type() == CV_8U || grid.type() == CV_8UC1);
+
+    int grid_w = grid.cols;
+    int grid_h = grid.rows;
+
+    // 统计 branch points
+    int branchPoints = 0;
+    for (int gy = 1; gy < grid.rows - 1; gy++) {
+        for (int gx = 1; gx < grid.cols - 1; gx++) {
+            if (grid.at<uchar>(gy, gx) == 0) continue;
+
+            int neighbors = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dy == 0 && dx == 0) continue;
+                    if (grid.at<uchar>(gy + dy, gx + dx) > 0) {
+                        neighbors++;
+                    }
+                }
+            }
+            if (neighbors >= 3) {
+                branchPoints++;
+            }
+        }
+    }
+
+    return branchPoints;
+}
+
 struct ImageInfo {
     double linearity;
     int branchPoints;
@@ -36,7 +77,7 @@ struct ImageInfo {
 };
 
 // --- PCA 计算函数
-ImageInfo analyzeImage(const cv::Mat& img) {
+ImageInfo analyzeImage(const cv::Mat& img, const cv::Mat& grid) {
     // --- 二值化（非零即前景）
     cv::Mat binary = (img > 0);
     binary.convertTo(binary, CV_8U);
@@ -77,7 +118,8 @@ ImageInfo analyzeImage(const cv::Mat& img) {
     cv::Mat eigenvalues = pca_analysis.eigenvalues;
     double linearity = eigenvalues.at<double>(0) / (eigenvalues.at<double>(1) + 1e-8);
 
-    // --- 骨架化 + 分叉点数（简单版：使用腐蚀膨胀方式）
+    // --- 骨架化
+    /* （简单版：使用腐蚀膨胀方式）
     cv::Mat skel(mask.size(), CV_8U, cv::Scalar(0));
     cv::Mat temp, eroded;
     cv::Mat element = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3,3));
@@ -91,9 +133,18 @@ ImageInfo analyzeImage(const cv::Mat& img) {
         imgCopy = eroded.clone();
         done = (cv::countNonZero(imgCopy) == 0);
     } while (!done);
+    */
+
+    /*use thinning*/
+    /*
+	cv::Mat skel;
+	cv::ximgproc::thinning(mask, skel, cv::ximgproc::THINNING_ZHANGSUEN);
+    */
 
     // 分叉点统计
     int branchPoints = 0;
+    /*
+	cv::Mat skel = mask;
     for (int y = 1; y < skel.rows - 1; ++y) {
         for (int x = 1; x < skel.cols - 1; ++x) {
             if (skel.at<uchar>(y, x)) {
@@ -108,7 +159,9 @@ ImageInfo analyzeImage(const cv::Mat& img) {
             }
         }
     }
+    */
 
+    branchPoints = countBranchPointsOfGrid(grid);
     // --- elongation
     double majorAxis = std::sqrt(eigenvalues.at<double>(0));
     double minorAxis = std::sqrt(eigenvalues.at<double>(1));
@@ -118,15 +171,17 @@ ImageInfo analyzeImage(const cv::Mat& img) {
 }
 
 // --- 主选择函数
-int selectBestImage(const std::vector<cv::Mat>& images) {
+int selectBestImage(const std::vector<cv::Mat>& images,
+					const std::vector<cv::Mat>& grids) {
     std::vector<double> scores;
     std::vector<ImageInfo> infos;
 
     for (size_t i = 0; i < images.size(); ++i) {
-        ImageInfo info = analyzeImage(images[i]);
+        ImageInfo info = analyzeImage(images[i], grids[i]);
         infos.push_back(info);
 
-        double score = info.linearity * 10.0 / (info.branchPoints + 1);
+        double score = (info.linearity * 8.0 + info.elongation * 2)
+						/ (info.branchPoints + 1);
         scores.push_back(score);
 
         // 打印每张图 info
@@ -191,11 +246,16 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
     gray.convertTo(img_f, CV_32F);
 
 	std::vector<cv::Mat> result_images;
+	std::vector<cv::Mat> result_grids;
 
 	Mat out = Mat::zeros(h, w, CV_32F);
     // ----------------- 左→右 -----------------
     if (dirc | LEFT_TO_RIGHT)
     {
+		int grid_w = (w + bdr_width - 1) / bdr_width;
+		int grid_h = (h + slice_width - 1) / slice_width;
+		Mat grid = Mat::zeros(grid_h, grid_w, CV_8U);
+
 		out.setTo(0);
         for (int y0 = 0; y0 < h; y0 += slice_width)
         {
@@ -224,6 +284,8 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                     out(Range(y0, y1), Range(0, x0)) = 0;
                     out(Range(y0, y1), Range(x1, w)) = 0;
                     row_set = true;
+
+					grid.at<uchar>(y0 / slice_width, x0 / bdr_width) = 1;
                 }
             }
         }
@@ -236,11 +298,17 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 		}
 		result_images.push_back(out_final);
 		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(LEFT_TO_RIGHT));
+		result_grids.push_back(grid);
 	}
 
     // ----------------- 右→左 -----------------
     if (dirc | RIGHT_TO_LEFT)
     {
+		int grid_w = (w + bdr_width - 1) / bdr_width;
+		int grid_h = (h + slice_width - 1) / slice_width;
+        int grid_w_extra = (bdr_width - w % bdr_width) % bdr_width;
+		Mat grid = Mat::zeros(grid_h, grid_w, CV_8U);
+
 		out.setTo(0);
         for (int y0 = 0; y0 < h; y0 += slice_width)
         {
@@ -269,6 +337,9 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                     out(Range(y0, y1), Range(0, x0)) = 0;
                     out(Range(y0, y1), Range(x1, w)) = 0;
                     row_set = true;
+
+					grid.at<uchar>(y0 / slice_width,
+								  (x0 + grid_w_extra) / bdr_width) = 1;
                 }
             }
         }
@@ -281,24 +352,29 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 		}
 		result_images.push_back(out_final);
 		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(RIGHT_TO_LEFT));
+		result_grids.push_back(grid);
     }
 
     // ----------------- 上→下 -----------------
     if (dirc | TOP_TO_BOTTOM)
     {
+		int grid_w = (w + slice_width - 1) / slice_width;
+		int grid_h = (h + bdr_width- 1) / bdr_width;
+		Mat grid = Mat::zeros(grid_h, grid_w, CV_8U);
+
 		out.setTo(0);
-        for (int x0 = 0; x0 < w; x0 += bdr_width)
+        for (int x0 = 0; x0 < w; x0 += slice_width)
         {
-            int x1 = min(x0 + bdr_width, w);
+            int x1 = min(x0 + slice_width, w);
             bool col_set = false;
-            for (int y0 = 0; y0 < h; y0 += slice_width) {
+            for (int y0 = 0; y0 < h; y0 += bdr_width) {
                 if (col_set) break;
-                int y1 = min(y0 + slice_width, h);
+                int y1 = min(y0 + bdr_width, h);
 
                 Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
                 double center_mean = mean(center_block)[0];
 
-                int yt0 = max(0, y0 - slice_width);
+                int yt0 = max(0, y0 - bdr_width);
                 int yt1 = y0;
                 double top_mean = 0;
                 if (yt1 > yt0) top_mean = mean(img_f(Range(yt0, yt1), Range(x0, x1)))[0];
@@ -310,6 +386,8 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                     out(Range(0, y0), Range(x0, x1)) = 0;
                     out(Range(y1, h), Range(x0, x1)) = 0;
                     col_set = true;
+
+					grid.at<uchar>(y0 / bdr_width, x0 / slice_width) = 1;
                 }
 
             }
@@ -323,25 +401,31 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 		}
 		result_images.push_back(out_final);
         if (all_outs_names) all_outs_names->push_back(dir_e_to_str(TOP_TO_BOTTOM));
+		result_grids.push_back(grid);
     }
 
     // ----------------- 下→上 -----------------
     if (dirc | BOTTOM_TO_TOP)
     {
+		int grid_w = (w + slice_width - 1) / slice_width;
+		int grid_h = (h + bdr_width - 1) / bdr_width;
+		int grid_h_extra = (bdr_width - h % bdr_width) % bdr_width;
+		Mat grid = Mat::zeros(grid_h, grid_w, CV_8U);
+
 		out.setTo(0);
-        for (int x0 = 0; x0 < w; x0 += bdr_width)
+        for (int x0 = 0; x0 < w; x0 += slice_width)
         {
-            int x1 = min(x0 + bdr_width, w);
+            int x1 = min(x0 + slice_width, w);
             bool col_set = false;
-            for (int y0 = h - slice_width; y0 >= 0; y0 -= slice_width) {
+            for (int y0 = h - bdr_width; y0 >= 0; y0 -= bdr_width) {
                 if (col_set) break;
-                int y1 = min(y0 + slice_width, h);
+                int y1 = min(y0 + bdr_width, h);
 
                 Mat center_block = img_f(Range(y0, y1), Range(x0, x1));
                 double center_mean = mean(center_block)[0];
 
                 int yb0 = min(h, y1);
-                int yb1 = min(h, y1 + slice_width);
+                int yb1 = min(h, y1 + bdr_width);
                 double bottom_mean = 0;
                 if (yb1 > yb0) bottom_mean = mean(img_f(Range(yb0, yb1), Range(x0, x1)))[0];
 
@@ -352,7 +436,11 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
                     out(Range(0, y0), Range(x0, x1)) = 0;
                     out(Range(y1, h), Range(x0, x1)) = 0;
                     col_set = true;
+
+					grid.at<uchar>((y0 + grid_h_extra) / bdr_width,
+									x0 / slice_width) = 1;
                 }
+
             }
         }
 
@@ -364,6 +452,7 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 		}
 		result_images.push_back(out_final);
 		if (all_outs_names) all_outs_names->push_back(dir_e_to_str(BOTTOM_TO_TOP));
+		result_grids.push_back(grid);
     }
 
     if(result_images.size() == 0)
@@ -371,7 +460,7 @@ Mat detect_boundaries_block_4dir(const Mat& img, int bdr_width = 20, int slice_w
 		cout << "No direction selected!" << endl;
         return Mat();
 	}
-	int bestIdx = selectBestImage(result_images);
+	int bestIdx = selectBestImage(result_images, result_grids);
     if (all_outs) *all_outs = result_images;
 	if (best_idx) *best_idx = bestIdx;
 	return result_images[bestIdx];
@@ -519,6 +608,7 @@ Mat vflip_mat(Mat& img)
 
 int main(int argc, char** argv)
 {
+    SetConsoleOutputCP(CP_UTF8);
     if (argc < 2) {
         cout << "Usage: " << argv[0] << " image_file" << endl;
         return -1;
@@ -579,7 +669,7 @@ int main(int argc, char** argv)
         for (int i = 0; i < all_outs.size(); i++)
         {
             string fn = make_new_filename(img_fn,
-                name_apx + "-" + all_outs_names[i]);
+                name_apx + "-" + std::to_string(i) + "_" + all_outs_names[i]);
 			Mat edges;
 			convertScaleAbs(all_outs[i], edges); // 可视化
             imwrite(fn, edges);
